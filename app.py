@@ -13,7 +13,7 @@ import requests
 import streamlit as st
 
 APP_TITLE = "V.6 Padebuolo Fresh"
-APP_VERSION = "V.6.1 - Updated Beyond!"
+APP_VERSION = "V.6.2 Fresh - Time Series Sort Fix + SQLite + GitHub Backup"
 DEFAULT_PASSWORD = "rumdin123"
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -710,8 +710,17 @@ def balances_by_fund(df):
 
 
 def monthly_category_data(df, selected_categories=None, selected_funds=None):
+    """Return monthly expense movement with a real chronological sort key.
+
+    Important: the display label (Apr 2026, Mei 2026, etc.) must not be used
+    as the chart index because Streamlit/Altair can sort text labels
+    alphabetically. We keep BulanSort as an actual month-start Timestamp so
+    charts always run Apr -> Mei -> Jun -> Jul, etc.
+    """
+    cols = ["BulanSort", "Bulan", "Kategori", "Sumber Dana", "Total"]
     if df.empty:
-        return pd.DataFrame(columns=["Bulan", "Kategori", "Sumber Dana", "Total"])
+        return pd.DataFrame(columns=cols)
+
     work = df.copy()
     work = work[work["type"].eq("Keluar")].copy()
     if selected_categories and "Semua" not in selected_categories:
@@ -719,13 +728,23 @@ def monthly_category_data(df, selected_categories=None, selected_funds=None):
     if selected_funds and "Semua" not in selected_funds:
         work = work[work["fund"].isin(selected_funds)]
     if work.empty:
-        return pd.DataFrame(columns=["Bulan", "Kategori", "Sumber Dana", "Total"])
+        return pd.DataFrame(columns=cols)
+
     work["date_dt"] = pd.to_datetime(work["date"], errors="coerce")
     work = work.dropna(subset=["date_dt"])
-    work["Bulan"] = work["date_dt"].dt.to_period("M").astype(str)
-    agg = work.groupby(["Bulan", "category", "fund"], as_index=False)["amount"].sum()
-    agg.columns = ["Bulan", "Kategori", "Sumber Dana", "Total"]
-    return agg
+    if work.empty:
+        return pd.DataFrame(columns=cols)
+
+    work["BulanSort"] = work["date_dt"].dt.to_period("M").dt.to_timestamp()
+    work["Bulan"] = work["BulanSort"].dt.to_period("M").astype(str).map(format_month_id)
+
+    agg = (
+        work.groupby(["BulanSort", "Bulan", "category", "fund"], as_index=False)["amount"]
+        .sum()
+        .sort_values(["BulanSort", "category", "fund"])
+    )
+    agg = agg.rename(columns={"category": "Kategori", "fund": "Sumber Dana", "amount": "Total"})
+    return agg[cols]
 
 
 def filter_transactions(df, start=None, end=None, funds=None, types=None, cats=None, keyword=""):
@@ -1121,24 +1140,36 @@ def page_pergerakan(df):
         st.info("Tidak ada data sesuai filter.")
         return
 
-    pivot = movement.groupby(["Bulan", "Kategori"], as_index=False)["Total"].sum().pivot(index="Bulan", columns="Kategori", values="Total").fillna(0)
-    pivot.index = [format_month_id(x) for x in pivot.index]
+    # Build chart from a real datetime index. Do NOT use the displayed month label
+    # as the index, because text labels can be sorted alphabetically.
+    pivot = (
+        movement.groupby(["BulanSort", "Kategori"], as_index=False)["Total"]
+        .sum()
+        .pivot(index="BulanSort", columns="Kategori", values="Total")
+        .fillna(0)
+        .sort_index()
+    )
+
+    st.caption("Grafik diurutkan berdasarkan tanggal asli, bukan alfabet nama bulan.")
     if chart_type == "Line chart":
         st.line_chart(pivot)
     else:
         st.bar_chart(pivot)
 
     st.subheader("Tabel Pivot Bulan x Kategori")
-    pivot_disp = pivot.reset_index().rename(columns={"index": "Bulan"})
+    pivot_disp = pivot.reset_index().rename(columns={"BulanSort": "Bulan"})
+    pivot_disp["Bulan"] = pivot_disp["Bulan"].dt.to_period("M").astype(str).map(format_month_id)
     show_df(df_display(pivot_disp, money_cols=[c for c in pivot_disp.columns if c != "Bulan"]))
 
     st.subheader("Ranking Belanja Kategori")
     rank = movement.groupby("Kategori", as_index=False)["Total"].sum().sort_values("Total", ascending=False)
     show_df(df_display(rank, money_cols=["Total"]))
 
+    export_movement = movement.copy()
+    export_movement["BulanSort"] = export_movement["BulanSort"].dt.strftime("%Y-%m")
     st.download_button(
         "Download data pergerakan CSV",
-        data=movement.to_csv(index=False).encode("utf-8"),
+        data=export_movement.to_csv(index=False).encode("utf-8"),
         file_name="pergerakan_belanja_bulanan.csv",
         mime="text/csv",
     )
