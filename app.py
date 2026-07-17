@@ -13,7 +13,7 @@ import requests
 import streamlit as st
 
 APP_TITLE = "V.6 Padebuolo Fresh"
-APP_VERSION = "V.6.2 Fresh - Time Series Sort Fix + SQLite + GitHub Backup"
+APP_VERSION = "V.6.3 Beyond Super!!!"
 DEFAULT_PASSWORD = "rumdin123"
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -1124,24 +1124,59 @@ def page_pergerakan(df):
         st.info("Belum ada pengeluaran.")
         return
 
-    min_d = pd.to_datetime(expense["date"]).min().date()
-    max_d = pd.to_datetime(expense["date"]).max().date()
+    expense["date_dt"] = pd.to_datetime(expense["date"], errors="coerce")
+    expense = expense.dropna(subset=["date_dt"]).copy()
+    if expense.empty:
+        st.info("Tanggal transaksi pengeluaran belum valid.")
+        return
+
+    expense["BulanSort"] = expense["date_dt"].dt.to_period("M").dt.to_timestamp()
+    month_lookup = (
+        expense[["BulanSort"]]
+        .drop_duplicates()
+        .sort_values("BulanSort")
+        .assign(Bulan=lambda x: x["BulanSort"].dt.to_period("M").astype(str).map(format_month_id))
+    )
+    month_options = month_lookup["Bulan"].tolist()
+    month_map = dict(zip(month_lookup["Bulan"], month_lookup["BulanSort"]))
+
+    min_d = expense["date_dt"].min().date()
+    max_d = expense["date_dt"].max().date()
     with st.expander("Filter", expanded=True):
+        st.caption("Pakai filter bulan kalau mau lihat belanja bulan tertentu, misalnya hanya Mei 2026.")
+        selected_months = st.multiselect(
+            "Bulan belanja",
+            ["Semua"] + month_options,
+            default=["Semua"],
+            key="mov_months",
+        )
         c1, c2 = st.columns(2)
         start = c1.date_input("Tanggal awal", value=min_d, format="DD/MM/YYYY", key="mov_start")
         end = c2.date_input("Tanggal akhir", value=max_d, format="DD/MM/YYYY", key="mov_end")
-        cats = st.multiselect("Kategori", ["Semua"] + get_categories(df), default=["Semua"])
+        cats = st.multiselect("Kategori", ["Semua"] + get_categories(df), default=["Semua"], key="mov_cats")
         funds = st.multiselect("Sumber Dana", ["Semua"] + get_funds(df), default=["Semua"], key="mov_funds")
         chart_type = st.radio("Jenis grafik", ["Line chart", "Bar chart"], horizontal=True)
 
-    filtered = filter_transactions(expense, start, end, funds, ["Keluar"], cats)
+    filtered = filter_transactions(expense.drop(columns=["date_dt", "BulanSort"], errors="ignore"), start, end, funds, ["Keluar"], cats)
+    if selected_months and "Semua" not in selected_months:
+        selected_month_starts = [month_map[m] for m in selected_months if m in month_map]
+        filtered_dt = pd.to_datetime(filtered["date"], errors="coerce")
+        filtered_month = filtered_dt.dt.to_period("M").dt.to_timestamp()
+        filtered = filtered[filtered_month.isin(selected_month_starts)].copy()
+
     movement = monthly_category_data(filtered, cats, funds)
     if movement.empty:
         st.info("Tidak ada data sesuai filter.")
         return
 
+    selected_month_label = "Semua bulan" if (not selected_months or "Semua" in selected_months) else ", ".join(selected_months)
+    total_filtered = movement["Total"].sum()
+    st.metric("Total belanja sesuai filter", rp_compact(total_filtered), help=rp(total_filtered))
+    st.caption(f"Bulan terpilih: **{selected_month_label}**")
+
     # Build chart from a real datetime index. Do NOT use the displayed month label
-    # as the index, because text labels can be sorted alphabetically.
+    # as the index, because Streamlit/Altair can sort text labels
+    # alphabetically.
     pivot = (
         movement.groupby(["BulanSort", "Kategori"], as_index=False)["Total"]
         .sum()
@@ -1150,7 +1185,6 @@ def page_pergerakan(df):
         .sort_index()
     )
 
-    st.caption("Grafik diurutkan berdasarkan tanggal asli, bukan alfabet nama bulan.")
     if chart_type == "Line chart":
         st.line_chart(pivot)
     else:
@@ -1164,6 +1198,18 @@ def page_pergerakan(df):
     st.subheader("Ranking Belanja Kategori")
     rank = movement.groupby("Kategori", as_index=False)["Total"].sum().sort_values("Total", ascending=False)
     show_df(df_display(rank, money_cols=["Total"]))
+
+    st.subheader("Detail Transaksi Pengeluaran")
+    detail = filtered.sort_values("date").copy()
+    detail_disp = detail[["date", "fund", "category", "description", "amount", "note"]].rename(columns={
+        "date": "Tanggal",
+        "fund": "Sumber Dana",
+        "category": "Kategori",
+        "description": "Keterangan",
+        "amount": "Keluar",
+        "note": "Catatan",
+    })
+    show_df(df_display(detail_disp, money_cols=["Keluar"], date_cols=["Tanggal"]), height=360)
 
     export_movement = movement.copy()
     export_movement["BulanSort"] = export_movement["BulanSort"].dt.strftime("%Y-%m")
