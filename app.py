@@ -13,7 +13,7 @@ import requests
 import streamlit as st
 
 APP_TITLE = "V.6 Padebuolo Fresh"
-APP_VERSION = "V.6.0 Fresh - SQLite + GitHub Backup"
+APP_VERSION = "V.6.1 - Updated Beyond!"
 DEFAULT_PASSWORD = "rumdin123"
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -199,10 +199,20 @@ def df_display(df, money_cols=None, date_cols=None):
 
 
 def show_df(df, height=None):
+    """Render dataframe safely across Streamlit versions.
+
+    Newer Streamlit versions can error when height=None is passed explicitly,
+    so height is only sent when it has a real value.
+    """
+    kwargs = {"use_container_width": True, "hide_index": True}
+    if height is not None:
+        kwargs["height"] = height
+
     try:
-        st.dataframe(df, use_container_width=True, hide_index=True, height=height)
+        st.dataframe(df, **kwargs)
     except TypeError:
-        st.dataframe(df, use_container_width=True, height=height)
+        kwargs.pop("hide_index", None)
+        st.dataframe(df, **kwargs)
 
 
 def safe_toast(msg):
